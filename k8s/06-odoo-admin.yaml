@@ -17,7 +17,7 @@ metadata:
   namespace: odoo-admin
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: local-path
+  storageClassName: ceph-rbd
   resources:
     requests:
       storage: 20Gi
@@ -36,22 +36,25 @@ metadata:
   name: odoo-admin-conf
   namespace: odoo-admin
 data:
-  addon-git-branch: "main"
+  addon-git-branch: "18.0"
   odoo.conf.tmpl: |
     [options]
     db_host = postgres.aeisoftware.svc.cluster.local
-    db_port = 5432
+    db_port = 5000
     db_user = odoo
     db_password = REPLACE_DB_PASSWORD
     admin_passwd = REPLACE_ADMIN_PASSWD
+    db_name = admin
     dbfilter = ^admin$
-    list_db = True
+    list_db = False
     addons_path = /mnt/extra-addons,/usr/lib/python3/dist-packages/odoo/addons
     data_dir = /var/lib/odoo
-    workers = 2
+    workers = 4
     max_cron_threads = 1
     gevent_port = 8072
     proxy_mode = True
+    limit_time_cpu = 1200
+    limit_time_real = 2400
 
 ---
 apiVersion: apps/v1
@@ -82,24 +85,27 @@ spec:
                 configMapKeyRef:
                   name: odoo-admin-conf
                   key: addon-git-branch
+            - name: GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-credentials
+                  key: GIT_TOKEN
+                  optional: true
           command:
             - sh
             - -c
             - |
               echo "==> Cloning branch: $ADDON_GIT_BRANCH"
-              # Clone SaaS repo (base addons + payment_qr_mercantil)
-              git clone --depth=1 -b "$ADDON_GIT_BRANCH" https://github.com/jpvargassoruco/odoo-saas-mvp.git /tmp/repo
-              cp -r /tmp/repo/odoo_k8s_saas /mnt/extra-addons/
-              cp -r /tmp/repo/odoo_k8s_saas_subscription /mnt/extra-addons/
-              cp -r /tmp/repo/payment_qr_mercantil /mnt/extra-addons/
-              # Clone subscription_oca from OCA fork
-              git clone --depth=1 -b 18.0 https://github.com/jpvargassoruco/odoo18-oca-contract.git /tmp/oca-contract
-              cp -r /tmp/oca-contract/subscription_oca /mnt/extra-addons/
-              # Clone MUK modules (v19.0)
-              git clone --depth=1 -b 19.0 https://github.com/muk-it/muk_base.git /tmp/muk-base
-              for d in /tmp/muk-base/muk_*/; do
-                cp -r "$d" /mnt/extra-addons/
-              done
+              AUTH="${GIT_TOKEN:+${GIT_TOKEN}@}"
+              git clone --depth=1 -b "$ADDON_GIT_BRANCH" "https://${AUTH}github.com/AEI-Software/aei-odoo-saas.git" /tmp/repo
+              # Copy all custom modules from addons/ automatically
+              if [ -d /tmp/repo/addons ]; then
+                cp -r /tmp/repo/addons/* /mnt/extra-addons/
+              fi
+              # Copy all modules from external_addons automatically
+              if [ -d /tmp/repo/external_addons ]; then
+                cp -r /tmp/repo/external_addons/* /mnt/extra-addons/
+              fi
               echo "All addons copied OK"
               ls -la /mnt/extra-addons/
           volumeMounts:
@@ -136,9 +142,36 @@ spec:
             - name: odoo-conf-rendered
               mountPath: /etc/odoo
 
+        # 3. Flush cached asset bundles (ir.attachment) on every start.
+        #    With imagePullPolicy: Always on the odoo container, the running
+        #    build can legitimately differ between restarts (upstream odoo:18
+        #    updates, or a pod reschedule to a node with a different cached
+        #    digest). A stale cached bundle compiled by a different build can
+        #    register core Owl templates (e.g. mail.Thread) with mismatched
+        #    content and break "loadBundle" bundles like portal.assets_chatter
+        #    (OwlError: Missing template). Assets recompile automatically on
+        #    the next request, so this is always safe — see DEPLOY.md.
+        - name: flush-asset-cache
+          image: ghcr.io/aei-software/aei-odoo-saas/odoo:stable
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - |
+              PGPASSWORD="${DB_PASSWORD}" psql -h postgres.aeisoftware.svc.cluster.local -p 5000 \
+                -U odoo -d admin -c "DELETE FROM ir_attachment WHERE url LIKE '/web/assets/%'" \
+                || echo "flush-asset-cache: skipped (DB not initialized yet)"
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-admin-secret
+                  key: DB_PASSWORD
+
       containers:
         - name: odoo
-          image: odoo:18
+          image: ghcr.io/aei-software/aei-odoo-saas/odoo:stable
+          imagePullPolicy: Always
           # No --update flag: run manually with:
           # kubectl exec -n odoo-admin deploy/odoo-admin -- odoo -u <module> --stop-after-init
           ports:
@@ -153,6 +186,26 @@ spec:
                   name: portal-secret
                   key: API_KEY
                   optional: true
+            # TCP keepalives — prevent HAProxy from dropping idle connections (30min default).
+            - name: PGKEEPALIVES
+              value: "1"
+            - name: PGKEEPALIVES_IDLE
+              value: "60"
+            - name: PGKEEPALIVES_INTERVAL
+              value: "10"
+            - name: PGKEEPALIVES_COUNT
+              value: "5"
+            - name: SAAS_WEBHOOK_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: portal-secret
+                  key: SAAS_WEBHOOK_KEY
+                  optional: true
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-admin-secret
+                  key: DB_PASSWORD
           volumeMounts:
             - name: odoo-conf-rendered
               mountPath: /etc/odoo
@@ -161,20 +214,22 @@ spec:
             - name: odoo-addons
               mountPath: /mnt/extra-addons
           readinessProbe:
-            httpGet:
-              path: /web/health
+            tcpSocket:
               port: 8069
             initialDelaySeconds: 60
             periodSeconds: 10
             failureThreshold: 30
           resources:
             requests:
-              cpu: 100m
-              memory: 512Mi
+              cpu: 250m
+              memory: 1Gi
             limits:
-              cpu: 1
-              memory: 2Gi
-
+              cpu: 2
+              memory: 4Gi
+      #securityContext:
+      #  runAsNonRoot: true
+      #  runAsUser: 101
+      #  fsGroup: 101
       volumes:
         - name: odoo-conf-tmpl
           configMap:
@@ -211,7 +266,8 @@ metadata:
   name: odoo-admin-ingress
   namespace: odoo-admin
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: kube-system-odoo-headers@kubernetescrd,kube-system-security-headers@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:

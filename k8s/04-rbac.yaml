@@ -14,13 +14,16 @@ metadata:
   name: saas-portal-role
 rules:
   - apiGroups: [""]
-    resources: [namespaces, pods, pods/log, services, configmaps, secrets, persistentvolumeclaims, limitranges, resourcequotas]
+    resources: [namespaces, pods, pods/exec, pods/log, services, configmaps, secrets, persistentvolumeclaims, limitranges, resourcequotas]
     verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list, watch, delete]
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale", "statefulsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [networking.k8s.io]
-    resources: [ingresses]
+    resources: [ingresses, networkpolicies]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [policy]
     resources: [poddisruptionbudgets]
@@ -38,4 +41,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: saas-portal
-    namespace: aeisoftware
+    namespace: aeisoftware     # production
+  - kind: ServiceAccount
+    name: saas-portal
+    namespace: staging          # staging

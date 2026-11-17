@@ -1,0 +1,234 @@
+/** @odoo-module **/
+
+import publicWidget from "@web/legacy/js/public/public_widget";
+
+const TAB_KEYS = ["ArrowLeft", "ArrowRight", "Home", "End"];
+
+/**
+ * Behavior of the AEI public pages: mobile menu, client logo motion, company
+ * profile tabs, billing period, module filters, detail dialogs, and scroll motion.
+ *
+ * Every state change goes through classes, attributes and textContent. The
+ * markup for tab panels and dialogs is rendered by QWeb, so nothing is built
+ * from strings.
+ */
+publicWidget.registry.AeiLanding = publicWidget.Widget.extend({
+    selector: ".aei-site",
+    events: {
+        "click [data-aei-menu-toggle]": "_onMenuToggle",
+        "click [data-aei-client-motion]": "_onClientMotionToggle",
+        "click [data-aei-profile]": "_onProfileClick",
+        "keydown [data-aei-profile]": "_onProfileKeydown",
+        "click [data-billing]": "_onBillingClick",
+        "click [data-module-filter]": "_onModuleFilterClick",
+        "click [data-aei-plan-details]": "_onPlanDetailsClick",
+        "click [data-aei-module-details]": "_onModuleDetailsClick",
+        "click [data-aei-dialog-close]": "_onDialogCloseClick",
+        "click dialog": "_onDialogBackdropClick",
+        "click [data-aei-password-toggle]": "_onPasswordToggleClick",
+    },
+
+    start() {
+        this._enableRevealOnScroll();
+        return this._super(...arguments);
+    },
+
+    destroy() {
+        if (this._observer) {
+            this._observer.disconnect();
+        }
+        if (this._onWindowScroll) {
+            window.removeEventListener("scroll", this._onWindowScroll);
+        }
+        this.el.classList.remove("aei-motion");
+        this._super(...arguments);
+    },
+
+    // -- Bidirectional reveal & exit on scroll -------------------------------
+
+    _enableRevealOnScroll() {
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (prefersReducedMotion || !("IntersectionObserver" in window)) {
+            return;
+        }
+        this._lastScrollY = window.scrollY || 0;
+        this._scrollDirection = "down";
+        this._onWindowScroll = () => {
+            const currentY = window.scrollY || 0;
+            this._scrollDirection = currentY >= this._lastScrollY ? "down" : "up";
+            this._lastScrollY = currentY;
+        };
+        window.addEventListener("scroll", this._onWindowScroll, { passive: true });
+
+        this._observer = new IntersectionObserver(
+            (entries) => {
+                for (const entry of entries) {
+                    const node = entry.target;
+                    if (entry.isIntersecting) {
+                        node.classList.add("aei-is-visible");
+                        node.classList.remove("aei-is-exiting", "aei-exit-up", "aei-exit-down");
+                    } else if (node.classList.contains("aei-is-visible")) {
+                        const exitedAbove = entry.boundingClientRect.top < 0 || this._scrollDirection === "down";
+                        node.classList.remove("aei-is-visible");
+                        node.classList.add("aei-is-exiting");
+                        node.classList.toggle("aei-exit-up", exitedAbove);
+                        node.classList.toggle("aei-exit-down", !exitedAbove);
+                    }
+                }
+            },
+            { threshold: [0, 0.1], rootMargin: "-4% 0px -5% 0px" }
+        );
+        this.el.classList.add("aei-motion");
+        for (const node of this.el.querySelectorAll(".aei-reveal")) {
+            this._observer.observe(node);
+        }
+    },
+
+    // -- Mobile menu ---------------------------------------------------------
+
+    _onMenuToggle(ev) {
+        const button = ev.currentTarget;
+        const nav = this.el.querySelector("#" + button.getAttribute("aria-controls"));
+        const open = button.getAttribute("aria-expanded") !== "true";
+        button.setAttribute("aria-expanded", String(open));
+        button.setAttribute("aria-label", open ? "Cerrar menú" : "Abrir menú");
+        button.textContent = open ? "✕" : "☰";
+        if (nav) {
+            nav.classList.toggle("aei-is-open", open);
+        }
+    },
+
+    // -- Client logos --------------------------------------------------------
+
+    _onClientMotionToggle(ev) {
+        const button = ev.currentTarget;
+        const paused = button.getAttribute("aria-pressed") !== "true";
+        const lanes = this.el.querySelector("#" + button.getAttribute("aria-controls"));
+        button.setAttribute("aria-pressed", String(paused));
+        if (lanes) {
+            lanes.setAttribute("data-paused", String(paused));
+        }
+        button.querySelector("[data-aei-client-motion-label]").textContent = paused
+            ? "Reanudar logos"
+            : "Pausar logos";
+        button.querySelector("[data-aei-client-motion-icon]").textContent = paused ? "▶" : "Ⅱ";
+    },
+
+    // -- Billing period & module filters -------------------------------------
+
+    _onBillingClick(ev) {
+        const cycle = ev.currentTarget.dataset.billing;
+        for (const button of this.el.querySelectorAll("[data-billing]")) {
+            button.setAttribute("aria-pressed", String(button.dataset.billing === cycle));
+        }
+        for (const node of this.el.querySelectorAll("[data-aei-cycle]")) {
+            node.hidden = node.dataset.aeiCycle !== cycle;
+        }
+        for (const input of this.el.querySelectorAll("[data-aei-cycle-input]")) {
+            input.value = cycle;
+        }
+    },
+
+    _onModuleFilterClick(ev) {
+        const group = ev.currentTarget.dataset.moduleFilter;
+        for (const button of this.el.querySelectorAll("[data-module-filter]")) {
+            const active = button.dataset.moduleFilter === group;
+            button.classList.toggle("aei-is-active", active);
+            button.setAttribute("aria-pressed", String(active));
+        }
+        let count = 0;
+        for (const row of this.el.querySelectorAll("[data-module-row]")) {
+            row.hidden = group !== "all" && row.dataset.group !== group;
+            if (!row.hidden) {
+                count += 1;
+            }
+        }
+        const status = this.el.querySelector("[data-module-count]");
+        if (status) {
+            status.textContent = count + " alcances";
+        }
+    },
+
+    // -- Detail dialogs ------------------------------------------------------
+
+    _openDialog(dialogId) {
+        const dialog = this.el.querySelector("#" + dialogId);
+        if (dialog && !dialog.open) {
+            dialog.showModal();
+        }
+    },
+
+    _onPlanDetailsClick(ev) {
+        this._openDialog("aei-plan-dialog-" + ev.currentTarget.dataset.aeiPlanDetails);
+    },
+
+    _onModuleDetailsClick(ev) {
+        this._openDialog("aei-module-dialog-" + ev.currentTarget.dataset.aeiModuleDetails);
+    },
+
+    _onDialogCloseClick(ev) {
+        ev.currentTarget.closest("dialog").close();
+    },
+
+    _onDialogBackdropClick(ev) {
+        if (ev.target === ev.currentTarget) {
+            ev.currentTarget.close();
+        }
+    },
+
+    // -- Company profile tabs ------------------------------------------------
+
+    _onProfileClick(ev) {
+        this._selectProfile(ev.currentTarget.dataset.aeiProfile, false);
+    },
+
+    _onProfileKeydown(ev) {
+        if (!TAB_KEYS.includes(ev.key)) {
+            return;
+        }
+        ev.preventDefault();
+        const tabs = [...this.el.querySelectorAll("[data-aei-profile]")];
+        const current = tabs.indexOf(ev.currentTarget);
+        let next = current + (ev.key === "ArrowLeft" ? -1 : 1);
+        if (ev.key === "Home") {
+            next = 0;
+        } else if (ev.key === "End") {
+            next = tabs.length - 1;
+        }
+        this._selectProfile(tabs[(next + tabs.length) % tabs.length].dataset.aeiProfile, true);
+    },
+
+    _selectProfile(profileId, moveFocus) {
+        for (const tab of this.el.querySelectorAll("[data-aei-profile]")) {
+            const selected = tab.dataset.aeiProfile === profileId;
+            tab.setAttribute("aria-selected", String(selected));
+            tab.tabIndex = selected ? 0 : -1;
+            if (selected && moveFocus) {
+                tab.focus();
+            }
+        }
+        for (const panel of this.el.querySelectorAll(".aei-profile-panel")) {
+            panel.hidden = panel.id !== "aei-profile-panel-" + profileId;
+        }
+    },
+
+    // -- Password visibility toggle ------------------------------------------
+
+    _onPasswordToggleClick(ev) {
+        const button = ev.currentTarget;
+        const wrap = button.closest(".aei-password-wrap");
+        const input = wrap && wrap.querySelector("input");
+        if (!input) {
+            return;
+        }
+        const reveal = input.type === "password";
+        input.type = reveal ? "text" : "password";
+        button.setAttribute("aria-pressed", String(reveal));
+        button.setAttribute("aria-label", reveal ? "Ocultar contraseña" : "Mostrar contraseña");
+        const icon = button.querySelector("[data-aei-password-icon]");
+        if (icon) {
+            icon.classList.toggle("fa-eye", !reveal);
+            icon.classList.toggle("fa-eye-slash", reveal);
+        }
+    },
+});

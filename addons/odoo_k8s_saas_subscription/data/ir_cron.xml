@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <!-- Daily cron: suspend SaaS instances whose subscription is overdue -->
+  <record id="ir_cron_suspend_overdue_instances" model="ir.cron">
+    <field name="name">SaaS: Suspend Overdue Instances</field>
+    <field name="model_id" ref="subscription_oca.model_sale_subscription"/>
+    <field name="state">code</field>
+    <field name="code">model._cron_suspend_overdue()</field>
+    <field name="interval_number">1</field>
+    <field name="interval_type">days</field>
+    <field name="active">True</field>
+  </record>
+
+  <!-- Hourly safety-net: mark instances still active on Closed subscriptions -->
+  <record id="ir_cron_sync_closed_subscriptions" model="ir.cron">
+    <field name="name">SaaS: Sync Closed Subscription Instances</field>
+    <field name="model_id" ref="subscription_oca.model_sale_subscription"/>
+    <field name="state">code</field>
+    <field name="code">model._cron_sync_closed_subscriptions()</field>
+    <field name="interval_number">1</field>
+    <field name="interval_type">hours</field>
+    <field name="active">True</field>
+  </record>
+
+  <!-- Every 2 min: process instances marked for deletion (async K8s cleanup) -->
+  <record id="ir_cron_process_pending_deletes" model="ir.cron">
+    <field name="name">SaaS: Process Pending Instance Deletions</field>
+    <field name="model_id" ref="odoo_k8s_saas.model_saas_instance"/>
+    <field name="state">code</field>
+    <field name="code">model._cron_process_pending_deletes()</field>
+    <field name="interval_number">2</field>
+    <field name="interval_type">minutes</field>
+    <field name="active">True</field>
+  </record>
+
+  <!-- Hourly: sync user counts from portal API -->
+  <record id="ir_cron_sync_user_count" model="ir.cron">
+    <field name="name">SaaS: Sync User Count from Portal</field>
+    <field name="model_id" ref="subscription_oca.model_sale_subscription"/>
+    <field name="state">code</field>
+    <field name="code">model._cron_sync_user_count()</field>
+    <field name="interval_number">1</field>
+    <field name="interval_type">hours</field>
+    <field name="active">True</field>
+  </record>
+
+  <!-- Daily: update subscription lines for extra-user billing.
+       Runs AFTER sync_user_count so user_count is fresh.
+       Must run BEFORE OCA's invoicing cron generates the monthly invoice. -->
+  <record id="ir_cron_update_extra_user_line" model="ir.cron">
+    <field name="name">SaaS: Update Extra User Billing Lines</field>
+    <field name="model_id" ref="subscription_oca.model_sale_subscription"/>
+    <field name="state">code</field>
+    <field name="code">model._cron_update_extra_user_line()</field>
+    <field name="interval_number">1</field>
+    <field name="interval_type">days</field>
+    <field name="active">True</field>
+  </record>
+</odoo>
+
